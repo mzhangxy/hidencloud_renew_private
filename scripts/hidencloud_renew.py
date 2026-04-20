@@ -235,8 +235,16 @@ class HidenCloudAutoRenew:
                 
                 self.log("🎉 账号密码登录成功！")
                 if cookie_env:
-                    self.log(f"🔄 准备提取最新 Cookie 并保存至变量 [{cookie_env}]...")
-                    self.update_github_secret(cookie_env, json.dumps(page.cookies()))
+                    self.log("🔄 开始筛选并提取高寿命 Cookie...")
+                    # ⭐️ 核心修正 2：只提取 remember_web_ 开头的核心身份 Cookie，抛弃短命的 session
+                    all_cookies = page.cookies()
+                    remember_cookies = [c for c in all_cookies if c.get('name', '').startswith('remember_web_')]
+                    
+                    if remember_cookies:
+                        self.log(f"✅ 成功找到 {len(remember_cookies)} 个 remember_web 核心票据，准备保存至 [{cookie_env}]...")
+                        self.update_github_secret(cookie_env, json.dumps(remember_cookies))
+                    else:
+                        self.log("⚠️ 未在浏览器中找到 remember_web 票据，跳过保存。")
 
             # --- 步骤 3: 提取信息并跳转 ---
             self.log("🔍 等待提取服务器 ID...")
