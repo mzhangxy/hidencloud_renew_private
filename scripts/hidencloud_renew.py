@@ -141,51 +141,60 @@ class HidenCloudAutoRenew:
             saved_cookie_str = os.getenv(cookie_env, '[]')
             logged_in = False
             
-            # --- 步骤 1: 精准 Cookie 注入与登录 (只提取核心票据) ---
+            # --- 步骤 1: 尝试 Cookie 极速免密登录 ---
             if saved_cookie_str and saved_cookie_str != '[]':
-                self.log("🍪 尝试提取并注入核心 remember_web 票据...")
+                self.log("🍪 开始尝试提取并注入核心 remember_web 票据...")
                 try:
-                    # 1. 解析旧 Cookie 值
-                    old_cookie_name = "remember_web_59ba36addc2b2f9401580f014c7f58ea4e30989d"
-                    old_cookie_value = None
+                    # 1. 解析核心 Cookie
+                    cookie_name = "remember_web_59ba36addc2b2f9401580f014c7f58ea4e30989d"
+                    cookie_value = None
                     try:
                         raw_data = json.loads(saved_cookie_str)
                         if isinstance(raw_data, list) and len(raw_data) > 0:
-                            old_cookie_name = raw_data[0].get('name', old_cookie_name)
-                            old_cookie_value = raw_data[0].get('value')
+                            for c in raw_data:
+                                if c.get('name', '').startswith('remember_web_'):
+                                    cookie_name = c.get('name')
+                                    cookie_value = c.get('value')
+                                    break
                     except:
-                        # 兼容用户直接贴 Value 的情况
-                        old_cookie_value = saved_cookie_str.strip()
+                        cookie_value = saved_cookie_str.strip()
 
-                    if old_cookie_value:
-                        # 2. 建立域名上下文 (但不清理 CF 通行证)
-                        page.get("https://dash.hidencloud.com/auth/login")
-                        time.sleep(2)
+                    if cookie_value:
+                        self.log(f"✅ 解析到 Cookie 金牌: {cookie_name}")
                         
-                        # 3. 使用 CDP 协议注入带严格安全属性的“金牌”
-                        page.run_cdp('Network.setCookie', 
-                            name=old_cookie_name,
-                            value=old_cookie_value,
-                            domain='dash.hidencloud.com',
-                            path='/',
-                            secure=True,
-                            httpOnly=True,
-                            sameSite='Lax',
-                            expires=int(time.time()) + 3600 * 24 * 365
-                        )
-                        self.log(f"✅ 底层协议注入完成: {old_cookie_name[:20]}...")
+                        # 2. 访问首页中转站（不要访问登录页，避免触发强力反爬和复杂的表单 Session）
+                        page.get("https://dash.hidencloud.com/")
+                        time.sleep(1)
                         
-                        # 4. 跳转测试
+                        # 3. 【致命关键】彻底销毁服务器刚才下发的匿名 session，保证浏览器纯净！
+                        page.clear_cache(cookies=True)
+                        self.log("🧹 已清空匿名 Session 干扰...")
+
+                        # 4. 完美复刻 Playwright 的强安全属性注入 (字典格式)
+                        inject_cookie = {
+                            'name': cookie_name,
+                            'value': cookie_value,
+                            'domain': 'dash.hidencloud.com',
+                            'path': '/',
+                            'secure': True,
+                            'httpOnly': True,
+                            'sameSite': 'Lax'
+                        }
+                        # DrissionPage 接收单个字典或字典列表
+                        page.set.cookies([inject_cookie])
+                        self.log("✅ 纯净版高寿命 Cookie 注入完成。")
+                        
+                        # 5. 携票据直达后台
                         page.get("https://dash.hidencloud.com/dashboard")
                         time.sleep(4)
                         
-                        if "login" not in page.url and "Your Services" in page.html:
+                        if "auth/login" not in page.url and "Your Services" in page.html: 
                             logged_in = True
-                            self.log("🎉 Cookie 极速免密登录成功！")
+                            self.log("🎉 Cookie 极速免密登录大成功！完美绕过风控。")
                         else:
-                            self.log("⚠️ Cookie 似乎已被服务器作废，转入账密登录。")
-                except Exception as e:
-                    self.log(f"⚠️ Cookie 注入失败: {e}")
+                            self.log("⚠️ 注入后仍被服务端拦截，Cookie 金牌在服务端已过期作废。")
+                except Exception as e: 
+                    self.log(f"⚠️ Cookie 注入过程异常: {e}")
 
             # --- 步骤 2: 降级账号密码登录 (包含前置盾处理) ---
             if not logged_in:
