@@ -151,37 +151,50 @@ class HidenCloudAutoRenew:
             
             # --- 步骤 1: 尝试 Cookie 极速免密登录 ---
             if saved_cookie and saved_cookie != '[]':
-                self.log("🍪 尝试使用保存的纯净 Cookie 极速免密登录...")
+                self.log("🍪 开始尝试按照 Playwright 标准注入 Cookie...")
                 try:
-                    # 先访问登录页建立安全的上下文环境
-                    page.get("https://dash.hidencloud.com/auth/login")
-                    time.sleep(2)
-                    page.clear_cache(cookies=True)
-                    
-                    # 强力清洗 Cookie，只保留最基础属性
+                    # 提取上一次保存的 Cookie 值
                     raw_cookies = json.loads(saved_cookie)
-                    clean_cookies = []
+                    cookie_name = "remember_web_59ba36addc2b2f9401580f014c7f58ea4e30989d"
+                    cookie_value = None
+                    
                     for c in raw_cookies:
                         if c.get('name', '').startswith('remember_web_'):
-                            clean_cookies.append({
-                                'name': c.get('name'),
-                                'value': c.get('value'),
-                                'domain': 'dash.hidencloud.com',
-                                'path': '/'
-                            })
-                    
-                    if clean_cookies:
-                        page.set.cookies(clean_cookies)
-                        self.log("✅ 成功将纯净版 remember_web 注入浏览器")
+                            cookie_name = c.get('name')
+                            cookie_value = c.get('value')
+                            break
+                            
+                    if cookie_value:
+                        # 1. 访问首页建立合法的跨域上下文环境 (DrissionPage 的特性要求)
+                        page.get("https://dash.hidencloud.com/auth/login")
+                        time.sleep(1)
+                        page.clear_cache(cookies=True) # 清理废弃 Session
                         
-                    page.get("https://dash.hidencloud.com/dashboard")
-                    time.sleep(3)
-                    
-                    if "login" not in page.url and "Your Services" in page.html: 
-                        logged_in = True
-                        self.log("🎉 Cookie 登录成功！完美绕过所有风控。")
-                    else:
-                        self.log("⚠️ Cookie 似乎已过期或被服务器拒绝，将降级为账密登录。")
+                        # 2. ⭐️ 完全照搬 renew_service.py (Playwright) 中的严格安全属性
+                        playwright_cookie = {
+                            'name': cookie_name,
+                            'value': cookie_value,
+                            'domain': 'dash.hidencloud.com',
+                            'path': '/',
+                            'expires': int(time.time()) + 3600 * 24 * 365,
+                            'httpOnly': True,
+                            'secure': True,
+                            'sameSite': 'Lax'
+                        }
+                        
+                        # 3. 注入完美的 Cookie
+                        page.set.cookies(playwright_cookie)
+                        self.log("✅ 成功注入带有 HttpOnly/Secure 严格属性的 Cookie")
+                        
+                        # 4. 携票据直闯大本营
+                        page.get("https://dash.hidencloud.com/dashboard")
+                        time.sleep(4)
+                        
+                        if "auth/login" not in page.url and "Your Services" in page.html: 
+                            logged_in = True
+                            self.log("🎉 Cookie 登录大成功！完美绕过所有风控。")
+                        else:
+                            self.log("⚠️ 注入后仍被服务端退回登录页，票据可能已在服务端到期。")
                 except Exception as e: 
                     self.log(f"⚠️ Cookie 注入过程异常: {e}")
 
