@@ -1,0 +1,41 @@
+name: HidenCloud Auto Renew
+
+on:
+  workflow_dispatch:
+
+jobs:
+  renew:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 检出代码
+        uses: actions/checkout@v4
+
+      - name: 🐍 配置 Python 环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 📦 安装核心依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+          pip install DrissionPage requests pynacl
+
+      - name: 🚀 执行极速续期脚本
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          ACCOUNTS: ${{ secrets.ACCOUNTS }}
+          # 将你刚才测试成功的 Cookie 变量也加进来
+          HIDENCLOUD_COOKIE_1: ${{ secrets.HIDENCLOUD_COOKIE_1 }}
+        run: |
+          xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python scripts/hidencloud_renew.py
+
+      - name: 📤 收集错误截图 (仅排错用)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots
+          path: ./*.png
+          retention-days: 3
