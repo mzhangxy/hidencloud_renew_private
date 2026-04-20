@@ -134,6 +134,7 @@ class HidenCloudAutoRenew:
             saved_cookie = os.getenv(cookie_env, '[]')
             logged_in = False
             
+            # --- 步骤 1: 尝试 Cookie 登录 ---
             if saved_cookie and saved_cookie != '[]':
                 try:
                     page.set.cookies(json.loads(saved_cookie))
@@ -142,15 +143,15 @@ class HidenCloudAutoRenew:
                     if "login" not in page.url and "Your Services" in page.html: logged_in = True
                 except: pass
 
+            # --- 步骤 2: 降级账号密码登录 ---
             if not logged_in:
                 self.log("🔑 退回账号密码登录...")
                 page.clear_cache(cookies=True)
                 page.get("https://dash.hidencloud.com/auth/login")
-                time.sleep(3) # 给 Xvfb 虚拟屏幕充足的渲染时间
+                time.sleep(3) 
 
                 email_input = page.ele('css:input[name="username"]') or page.ele('css:input[name="email"]')
                 
-                # 真正的 5 秒前置盾判断逻辑：如果没有输入框，才说明被拦截在外层了
                 if not email_input:
                     self.log("🔍 未找到输入框，检查是否被 CF 前置盾拦截...")
                     if page.ele('css:iframe[src^="https://challenges.cloudflare.com"]'):
@@ -200,68 +201,118 @@ class HidenCloudAutoRenew:
                     self.log("❌ 登录超时或账号密码错误！截图留证: err_login_fail.png")
                     try: page.get_screenshot(path='.', name=f'err_login_fail_{index}.png')
                     except: pass
-                    res["status"] = "❌ 登录超时或失败"
+                    res["status"] = "❌ 登录失败"
                     return res
                 
                 self.log("🎉 账号密码登录成功！")
                 if cookie_env:
                     self.update_github_secret(cookie_env, json.dumps(page.cookies()))
 
-            # --- 下方续期代码保持不变 ---
-            server_match = re.search(r'Free Server\s+#(\d{6})', page.html)
-            if not server_match:
+            # --- 步骤 3: 提取信息并跳转 ---
+            self.log("🔍 等待提取服务器 ID...")
+            server_ele = None
+            for _ in range(10): # 增加动态重试等待渲染
+                server_ele = page.ele('xpath://*[contains(text(), "Free Server #")]')
+                if server_ele: break
+                time.sleep(1)
+
+            if not server_ele:
+                self.log("❌ 在控制台未找到 'Free Server #' 元素，截图留证: err_no_server.png")
+                try: page.get_screenshot(path='.', name=f'err_no_server_{index}.png')
+                except: pass
                 res["status"] = "❌ 找不到服务器"
                 return res
+                
+            server_text = server_ele.text
+            server_match = re.search(r'#(\d{6})', server_text)
+            if not server_match:
+                self.log(f"❌ Server ID 格式解析失败 (原文: {server_text})")
+                res["status"] = "❌ ID解析失败"
+                return res
+                
             res["server"] = server_match.group(1)
+            self.log(f"⚡ 成功提取服务器 ID: #{res['server']}")
             res["old_date"] = self.extract_due_date(page)
             
-            page.get(f"https://dash.hidencloud.com/service/{res['server']}/manage")
-            time.sleep(3)
+            manage_url = f"https://dash.hidencloud.com/service/{res['server']}/manage"
+            self.log(f"🔗 跳转管理页: {manage_url}")
+            page.get(manage_url)
+            time.sleep(4) # 给管理页足够的加载时间
 
+            # --- 步骤 4: 续期判断 ---
+            self.log("🔍 寻找 Renew 按钮...")
             renew_btn = page.ele('xpath://button[contains(., "Renew")]')
             if not renew_btn:
+                self.log("❌ 找不到 Renew 按钮，截图留证: err_no_renew_btn.png")
+                try: page.get_screenshot(path='.', name=f'err_no_renew_btn_{index}.png')
+                except: pass
                 res["status"] = "❌ 找不到续期按钮"
                 return res
 
+            self.log("🖱️ 点击 Renew 按钮...")
             renew_btn.click()
             time.sleep(2)
 
             page_text = page.html
             if "Renewal Restricted" in page_text or "less than 1 day left" in page_text:
+                self.log("⚠️ 收到拦截弹窗：离到期超过一天，暂不能续期")
                 res["status"] = "⏭️ 离到期超过一天，暂不能续期"
                 return res
                 
+            self.log("✅ 满足续期条件，准备点击 Create Invoice...")
             create_btn = page.ele('xpath://button[contains(., "Create Invoice")]')
-            if create_btn: create_btn.click()
+            if create_btn: 
+                create_btn.click()
+                self.log("🖱️ 点击了 Create Invoice 按钮")
             else:
+                self.log("❌ 找不到 Create Invoice 按钮，截图留证: err_no_invoice_btn.png")
+                try: page.get_screenshot(path='.', name=f'err_no_invoice_btn_{index}.png')
+                except: pass
                 res["status"] = "❌ 弹窗状态未知"
                 return res
 
+            # --- 步骤 5: 支付流程 ---
+            self.log("⏳ 等待跳转至账单页...")
             for _ in range(15):
                 if "/payment/invoice/" in page.url: break
                 time.sleep(1)
                 
             if "/payment/invoice/" not in page.url:
+                self.log("❌ 账单页跳转超时，截图留证: err_invoice_timeout.png")
+                try: page.get_screenshot(path='.', name=f'err_invoice_timeout_{index}.png')
+                except: pass
                 res["status"] = "❌ 账单页超时"
                 return res
 
+            self.log("📜 向下滚动寻找 Pay 按钮...")
             page.scroll.to_bottom()
             time.sleep(1)
             pay_btn = page.ele('xpath://button[contains(., "Pay")]')
-            if pay_btn: pay_btn.click()
+            if pay_btn: 
+                self.log("🖱️ 点击 Pay 按钮...")
+                pay_btn.click()
             else:
+                self.log("❌ 找不到 Pay 按钮，截图留证: err_no_pay_btn.png")
+                try: page.get_screenshot(path='.', name=f'err_no_pay_btn_{index}.png')
+                except: pass
                 res["status"] = "❌ 支付按钮缺失"
                 return res
 
+            # --- 步骤 6: 验证结果 ---
+            self.log("⏳ 等待支付完成，跳转回 Dashboard...")
             for _ in range(15):
                 if "dashboard" in page.url and "Success" in page.html: break
                 time.sleep(1)
 
             if "Success" in page.html:
+                self.log("🎉 支付成功！")
                 time.sleep(2)
                 res["new_date"] = self.extract_due_date(page)
                 res["status"] = "✅ 续期成功"
             else:
+                self.log("⚠️ 未捕获到明确的成功提示")
+                try: page.get_screenshot(path='.', name=f'warn_payment_status_{index}.png')
+                except: pass
                 res["status"] = "⚠️ 支付后状态未知"
 
         except Exception as e:
