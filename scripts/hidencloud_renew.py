@@ -221,6 +221,7 @@ class HidenCloudAutoRenew:
                 
                 self.log("🎉 账号密码登录成功！")
                 if cookie_env:
+                    self.log(f"🔄 准备提取最新 Cookie 并保存至变量 [{cookie_env}]...")
                     self.update_github_secret(cookie_env, json.dumps(page.cookies()))
 
             # --- 步骤 3: 提取信息并跳转 ---
