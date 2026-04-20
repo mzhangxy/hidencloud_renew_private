@@ -50,20 +50,35 @@ class HidenCloudAutoRenew:
             self.log(f"❌ TG 发送失败: {e}")
 
     def update_github_secret(self, secret_name, secret_value):
-        if not self.gh_token or not self.gh_repo or not NACL_AVAILABLE: return False
+        if not self.gh_token or not self.gh_repo:
+            self.log("⚠️ 缺少 GH_TOKEN 或 GITHUB_REPOSITORY 环境变量，无法更新 Cookie")
+            return False
+        if not NACL_AVAILABLE:
+            self.log("❌ 缺少 pynacl 库，无法加密 Secret")
+            return False
+            
         headers = {"Accept": "application/vnd.github+json", "Authorization": f"Bearer {self.gh_token}", "X-GitHub-Api-Version": "2022-11-28"}
         try:
             r = requests.get(f"https://api.github.com/repos/{self.gh_repo}/actions/secrets/public-key", headers=headers)
-            if r.status_code != 200: return False
+            if r.status_code != 200: 
+                self.log(f"❌ 获取仓库公钥失败: {r.text}")
+                return False
             key_data = r.json()
             public_key = nacl.public.PublicKey(key_data['key'].encode('utf-8'), nacl.encoding.Base64Encoder())
             sealed_box = nacl.public.SealedBox(public_key)
             encrypted = sealed_box.encrypt(secret_value.encode('utf-8'))
             encrypted_value = b64encode(encrypted).decode('utf-8')
             r_update = requests.put(f"https://api.github.com/repos/{self.gh_repo}/actions/secrets/{secret_name}", headers=headers, json={"encrypted_value": encrypted_value, "key_id": key_data['key_id']})
-            return r_update.status_code in [201, 204]
-        except: return False
-
+            if r_update.status_code in [201, 204]:
+                self.log(f"🎉 成功将新 Cookie 保存至 Github Secret: [{secret_name}]")
+                return True
+            else:
+                self.log(f"❌ Secret 更新失败 (权限不足?): {r_update.text}")
+                return False
+        except Exception as e: 
+            self.log(f"💥 Secret 更新发生异常: {e}")
+            return False
+    
     def solve_turnstile(self, page):
         self.log("🛡️ 开始处理 Turnstile...")
         try:
