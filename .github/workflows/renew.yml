@@ -59,5 +59,4 @@ jobs:
           # 传递环境变量给 Python 脚本，对应 V2rayN 默认的本地端口
           PROXY: 'socks5://127.0.0.1:10808'
         run: |
-          # 假设你的脚本放在 scripts 目录下
-          python scripts/hidencloud_renew.py
+          python hidencloud_renew.py
