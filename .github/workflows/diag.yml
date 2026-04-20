@@ -1,0 +1,43 @@
+name: Diagnostic Cookie Login
+
+on:
+  workflow_dispatch: # 手动触发
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      
+      - name: 安装依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+          pip install DrissionPage requests
+
+      - name: 启动代理 (Xray)
+        # 这里复用你之前的 Xray 启动步骤，确保测试 IP 和你抓 Cookie 时的 IP 一致
+        run: |
+          wget -q https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
+          unzip -q Xray-linux-64.zip -d xray_core
+          chmod +x xray_core/xray
+          echo "${{ secrets.XRAY_CONFIG_JSON }}" > xray_core/config.json
+          nohup ./xray_core/xray -c ./xray_core/config.json > xray.log 2>&1 &
+          sleep 5
+
+      - name: 执行诊断
+        env:
+          HIDENCLOUD_COOKIE_1: ${{ secrets.HIDENCLOUD_COOKIE_1 }}
+          PROXY: 'socks5://127.0.0.1:10808'
+        run: |
+          xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python test_cookie_gha.py
+
+      - name: 上传诊断截图
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostic-screenshot
+          path: ./*.png
