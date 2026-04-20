@@ -347,19 +347,26 @@ class HidenCloudAutoRenew:
         self.log("🚀 启动 HidenCloud 自动续期流程...")
         if not self.accounts:
             self.log("❌ 致命错误: 未检测到 ACCOUNTS 配置！程序退出。")
-            self.send_tg_notification("🚨 <b>HidenCloud 续期失败</b>\n❌ ACCOUNTS 环境变量未配置或解析失败。")
+            self.send_tg_notification("🚨 <b>HidenCloud 续期失败</b>\n❌ ACCOUNTS 环境变量未配置。")
             return
 
-        # 配置浏览器环境 (兼容 Headless)
+        # 配置浏览器环境
         co = ChromiumOptions()
         co.set_browser_path('/usr/bin/google-chrome')
         co.set_argument('--no-sandbox')
         co.set_argument('--disable-gpu')
         co.set_argument('--disable-dev-shm-usage')
         co.set_argument('--window-size=1280,1024')
-        co.headless(True) # 在 Actions 中必须设置为 True
+        co.headless(True)
+        
+        # 加载本地 Xray
+        proxy = os.getenv('PROXY')
+        if proxy:
+            co.set_argument(f'--proxy-server={proxy}')
+            self.log(f"🌐 已配置并启用本地代理: {proxy}")
 
         page = None
+    
         try:
             page = ChromiumPage(co)
             for i, account in enumerate(self.accounts):
