@@ -7,7 +7,6 @@ import random
 import re
 import requests
 import sys
-import traceback
 import json
 from datetime import datetime
 from DrissionPage import ChromiumPage, ChromiumOptions
@@ -31,7 +30,7 @@ class HidenCloudAutoRenew:
         try:
             self.accounts = json.loads(accounts_str)
         except Exception as e:
-            self.log(f"❌ ACCOUNTS 配置解析失败: {e}")
+            self.log(f"❌ ACCOUNTS 解析失败: {e}")
             self.accounts = []
             
         self.results = []
@@ -50,19 +49,11 @@ class HidenCloudAutoRenew:
             self.log(f"❌ TG 发送失败: {e}")
 
     def update_github_secret(self, secret_name, secret_value):
-        if not self.gh_token or not self.gh_repo:
-            self.log("⚠️ 缺少 GH_TOKEN 环境变量，无法更新 Secret")
-            return False
-        if not NACL_AVAILABLE:
-            self.log("❌ 缺少 pynacl 库，无法加密 Secret")
-            return False
-            
+        if not self.gh_token or not self.gh_repo or not NACL_AVAILABLE: return False
         headers = {"Accept": "application/vnd.github+json", "Authorization": f"Bearer {self.gh_token}", "X-GitHub-Api-Version": "2022-11-28"}
         try:
             r = requests.get(f"https://api.github.com/repos/{self.gh_repo}/actions/secrets/public-key", headers=headers)
-            if r.status_code != 200: 
-                self.log(f"❌ 获取仓库公钥失败: {r.text}")
-                return False
+            if r.status_code != 200: return False
             key_data = r.json()
             public_key = nacl.public.PublicKey(key_data['key'].encode('utf-8'), nacl.encoding.Base64Encoder())
             sealed_box = nacl.public.SealedBox(public_key)
@@ -70,53 +61,31 @@ class HidenCloudAutoRenew:
             encrypted_value = b64encode(encrypted).decode('utf-8')
             r_update = requests.put(f"https://api.github.com/repos/{self.gh_repo}/actions/secrets/{secret_name}", headers=headers, json={"encrypted_value": encrypted_value, "key_id": key_data['key_id']})
             if r_update.status_code in [201, 204]:
-                self.log(f"🎉 成功将核心票据保存至 Github Secret: [{secret_name}]")
+                self.log(f"🎉 成功将核心票据自动更新至 Github Secret: [{secret_name}]")
                 return True
-            else:
-                self.log(f"❌ Secret 更新失败: {r_update.text}")
-                return False
-        except Exception as e: 
-            self.log(f"💥 Secret 更新异常: {e}")
             return False
+        except: return False
 
     def solve_turnstile(self, page):
-        self.log("🛡️ 开始处理 Turnstile...")
+        self.log("🛡️ 尝试处理 Turnstile (仅账密登录兜底)...")
         try:
-            # 检查是否已存在 Token
-            resp_input = page.ele('css:[name="cf-turnstile-response"]')
-            if resp_input and len(resp_input.value) > 10:
-                self.log("⚡ Token 已存在，无需重复点击！")
-                return True
-
-            target_iframe = page.get_frame('css:iframe[src^="https://challenges.cloudflare.com"]', timeout=8)
+            target_iframe = page.get_frame('css:iframe[src^="https://challenges.cloudflare.com"]', timeout=5)
             if not target_iframe: return False
-            
             time.sleep(2)
-            click_success = False
             try:
-                # 穿透 ShadowRoot
                 sr = target_iframe.ele('tag:body').shadow_root
                 if sr:
                     target_ele = sr.ele('css:input[type="checkbox"]') or sr.ele('css:div.main-wrapper')
                     if target_ele:
-                        self.log("🎯 穿透 ShadowRoot 成功，执行底层点击...")
                         target_ele.click.at(offset_x=10, offset_y=10)
-                        click_success = True
-            except: pass
-
-            if not click_success:
-                try:
-                    target_iframe.frame_ele.click.at(offset_x=25, offset_y=30)
-                    click_success = True
+            except: 
+                try: target_iframe.frame_ele.click.at(offset_x=25, offset_y=30)
                 except: pass
-
-            if click_success:
-                for i in range(15):
-                    time.sleep(1)
-                    resp = page.ele('css:[name="cf-turnstile-response"]')
-                    if resp and len(resp.value) > 10:
-                        self.log(f"🎉 CF 验证通过！(耗时 {i+1}s)")
-                        return True
+            
+            for _ in range(15):
+                time.sleep(1)
+                resp = page.ele('css:[name="cf-turnstile-response"]')
+                if resp and len(resp.value) > 10: return True
             return False
         except: return False
 
@@ -141,45 +110,47 @@ class HidenCloudAutoRenew:
             saved_cookie_str = os.getenv(cookie_env, '[]')
             logged_in = False
             
-            # ====================== 【修复版】Cookie 极速免密登录 ======================
+            # --- 步骤 1: 实战验证成功的 CDP 极速免密登录 ---
             if saved_cookie_str and saved_cookie_str != '[]':
-                self.log("🍪 开始尝试提取并注入核心 remember_web 票据...")
+                self.log("🍪 启动 CDP 底层极速免密登录...")
                 try:
-                    # 1. 解析保存的完整 Cookie（新版是 list of dict，旧版兼容）
-                    raw_data = json.loads(saved_cookie_str)
-                    if isinstance(raw_data, list) and len(raw_data) > 0:
-                        inject_cookies = raw_data
-                    else:
-                        # 兼容旧版只存 value 的情况
-                        inject_cookies = [{
-                            'name': 'remember_web_59ba36addc2b2f9401580f014c7f58ea4e30989d',
-                            'value': saved_cookie_str.strip()
-                        }]
+                    cookie_name = "remember_web_59ba36addc2b2f9401580f014c7f58ea4e30989d"
+                    cookie_value = None
+                    try:
+                        raw_data = json.loads(saved_cookie_str)
+                        if isinstance(raw_data, list) and len(raw_data) > 0:
+                            cookie_name = raw_data[0].get('name', cookie_name)
+                            cookie_value = raw_data[0].get('value')
+                    except:
+                        cookie_value = saved_cookie_str.strip()
 
-                    self.log(f"✅ 解析到完整 Cookie 金牌: {len(inject_cookies)} 个（含 expires、sameSite 等）")
+                    if cookie_value:
+                        # 1. 访问中转站避开服务端 Session
+                        page.get("https://dash.hidencloud.com/robots.txt")
+                        time.sleep(1)
+                        # 2. 彻底清洗环境
+                        page.clear_cache(cookies=True)
+                        # 3. 底层强行注入
+                        page.run_cdp('Network.setCookie', 
+                            name=cookie_name, value=cookie_value,
+                            domain='dash.hidencloud.com', path='/',
+                            secure=True, httpOnly=True, sameSite='Lax',
+                            expires=int(time.time()) + 3600 * 24 * 365
+                        )
+                        self.log("✅ 核心金牌注入完成，直达 Dashboard...")
+                        # 4. 进入面板
+                        page.get("https://dash.hidencloud.com/dashboard")
+                        time.sleep(4)
+                        
+                        if "login" not in page.url and "Your Services" in page.html:
+                            logged_in = True
+                            self.log("🎉 Cookie 免密登录完美成功！")
+                        else:
+                            self.log("⚠️ Cookie 可能已在服务端过期，启动降级方案...")
+                except Exception as e:
+                    self.log(f"⚠️ 注入异常: {e}")
 
-                    # 2. 干净注入流程（关键修复）
-                    page.clear_cache(cookies=True)          # 先彻底清空匿名 session
-                    page.set.cookies(inject_cookies)        # 注入完整 cookie（保留所有原始属性）
-                    self.log("✅ 完整 Cookie 注入完成（保留 expires 等原始属性）")
-
-                    # 3. 直达后台 + refresh 强制生效（DrissionPage 必须刷新）
-                    page.get("https://dash.hidencloud.com/dashboard")
-                    time.sleep(3)
-                    page.refresh()                          # ← 关键修复：必须 refresh
-                    time.sleep(3)
-
-                    if "auth/login" not in page.url and "Your Services" in page.html: 
-                        logged_in = True
-                        self.log("🎉 Cookie 极速免密登录大成功！完美绕过风控。")
-                    else:
-                        self.log("⚠️ Cookie 注入后仍被拦截（可能是 Cookie 已过期）")
-                        self.log(f"当前 URL: {page.url}")
-                        self.log(f"页面是否包含 Your Services: {'Your Services' in page.html}")
-                except Exception as e: 
-                    self.log(f"⚠️ Cookie 注入过程异常: {e}")
-
-            # --- 步骤 2: 降级账号密码登录 (包含前置盾处理) ---
+            # --- 步骤 2: 降级账密登录 (作为兜底) ---
             if not logged_in:
                 self.log("🔑 退回账号密码登录...")
                 page.clear_cache(cookies=True)
@@ -187,16 +158,14 @@ class HidenCloudAutoRenew:
                 time.sleep(3) 
 
                 email_input = page.ele('css:input[name="username"]') or page.ele('css:input[name="email"]')
-                
                 if not email_input:
-                    self.log("🔍 检查是否被 CF 前置盾拦截...")
                     if page.ele('css:iframe[src^="https://challenges.cloudflare.com"]'):
-                        if self.solve_turnstile(page):
-                            time.sleep(5)
-                            email_input = page.ele('css:input[name="username"]') or page.ele('css:input[name="email"]')
+                        self.solve_turnstile(page)
+                        time.sleep(4)
+                        email_input = page.ele('css:input[name="username"]') or page.ele('css:input[name="email"]')
                 
                 if not email_input:
-                    self.log("❌ 依然找不到输入框，截图留证...")
+                    self.log("❌ 被防爬虫拦截，无法找到输入框。建议手动更新 GitHub Secret 里的 Cookie。")
                     try: page.get_screenshot(path='.', name=f'err_no_input_{index}.png')
                     except: pass
                     res["status"] = "❌ 登录白屏/拦截"
@@ -221,39 +190,21 @@ class HidenCloudAutoRenew:
                     time.sleep(1)
 
                 if not logged_in:
-                    self.log("❌ 登录超时或失败！截图留证...")
-                    try: page.get_screenshot(path='.', name=f'err_login_fail_{index}.png')
-                    except: pass
+                    self.log("❌ 登录失败！可能是密码错误或被拦截。")
                     res["status"] = "❌ 登录失败"
                     return res
                 
-                # ====================== 【修复版】保存完整 Cookie ======================
-                self.log("🎉 账密登录成功，准备抓取核心身份金牌...")
+                self.log("🎉 账密登录成功，自动抓取新 Cookie...")
                 if cookie_env:
-                    current_cookies = page.cookies()          # DrissionPage 返回完整 dict 列表
-                    target_cookies = []
+                    current_cookies = page.cookies()
                     for c in current_cookies:
                         if c.get('name', '').startswith('remember_web_'):
-                            target_cookies.append(c)          # 保存完整 cookie（含 expires、sameSite、path 等）
+                            target_cookie = {'name': c.get('name'), 'value': c.get('value')}
+                            self.update_github_secret(cookie_env, json.dumps([target_cookie]))
                             break
-                    
-                    if target_cookies:
-                        # 精准对比 value，避免无谓的 Secret 更新
-                        needs_save = True
-                        try:
-                            old_data = json.loads(saved_cookie_str)
-                            if isinstance(old_data, list) and len(old_data) > 0:
-                                if old_data[0].get('value') == target_cookies[0].get('value'):
-                                    needs_save = False
-                        except: pass
 
-                        if needs_save:
-                            self.log(f"🔄 核心票据有变化，正在保存至 Secret [{cookie_env}]...")
-                            self.update_github_secret(cookie_env, json.dumps(target_cookies))  # 保存完整 list
-                        else:
-                            self.log("✅ 核心票据未变动，无需更新 Secret。")
-
-            # --- 步骤 3: 信息提取与续期 (逻辑保持稳定) ---
+            # --- 步骤 3: 提取信息并续期 ---
+            self.log("🔍 提取服务器信息...")
             server_ele = None
             for _ in range(10):
                 server_ele = page.ele('xpath://*[contains(text(), "Free Server #")]')
@@ -261,6 +212,7 @@ class HidenCloudAutoRenew:
                 time.sleep(1)
 
             if not server_ele:
+                self.log("❌ 找不到服务器 (可能是账号暂无可用服务)")
                 res["status"] = "❌ 找不到服务器"
                 return res
                 
@@ -284,7 +236,8 @@ class HidenCloudAutoRenew:
 
             page_text = page.html
             if "Renewal Restricted" in page_text or "less than 1 day left" in page_text:
-                res["status"] = "⏭️ 离到期超过一天，暂不能续期"
+                self.log("⚠️ 收到拦截：暂不能续期")
+                res["status"] = "⏭️ 未到期"
                 return res
                 
             create_btn = page.ele('xpath://button[contains(., "Create Invoice")]')
@@ -331,16 +284,13 @@ class HidenCloudAutoRenew:
         co.set_argument('--window-size=1920,1080')
         co.headless(False)
         co.set_argument('--disable-blink-features=AutomationControlled')
-        
-        proxy = os.getenv('PROXY')
-        if proxy: co.set_argument(f'--proxy-server={proxy}')
 
         page = None
         try:
             page = ChromiumPage(co)
             for i, account in enumerate(self.accounts):
                 res = self.process_account(page, account, i)
-                icon = "✅" if "成功" in res['status'] else ("⏭️" if "暂不能续期" in res['status'] else "❌")
+                icon = "✅" if "成功" in res['status'] else ("⏭️" if "未到期" in res['status'] else "❌")
                 line = f"{icon} <b>{res['name']}</b> (<code>#{res['server']}</code>)\n   • 旧到期: {res['old_date']}\n"
                 if "成功" in res['status']: line += f"   • 新到期: {res['new_date']}\n"
                 line += f"   • 状态: {res['status']}\n"
