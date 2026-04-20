@@ -1,11 +1,9 @@
 name: HidenCloud Auto Renew
 
 on:
-  workflow_dispatch: # 允许手动点击运行
-  schedule:
-    # 每天 UTC 时间凌晨 2:00 运行 (北京时间上午 10:00)
-    # 建议避开整点高峰，可以改成 '15 2 * * *'
-    - cron: '0 2 * * *'
+  workflow_dispatch:
+  #schedule:
+  #  - cron: '15 2 * * *'
 
 jobs:
   renew:
@@ -19,44 +17,47 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: 📦 安装 Python 依赖
+      - name: 📦 安装核心环境与依赖
         run: |
+          # ⭐️ 安装 Xvfb 虚拟屏幕组件
+          sudo apt-get update
+          sudo apt-get install -y xvfb xdotool
+          
           python -m pip install --upgrade pip
           pip install DrissionPage pynacl requests
 
       - name: ⚙️ 部署并配置 Xray 核心
         run: |
-          echo "下载最新版 Xray-core..."
           wget -q https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
           unzip -q Xray-linux-64.zip -d xray_core
           chmod +x xray_core/xray
           
-          echo "生成 Xray 配置文件..."
-          # 从 Secrets 读取并生成 config.json
           cat << 'EOF' > xray_core/config.json
           ${{ secrets.XRAY_CONFIG_JSON }}
           EOF
 
       - name: 🚀 启动 Xray 代理隧道
         run: |
-          echo "后台启动 Xray..."
           nohup ./xray_core/xray -c ./xray_core/config.json > xray.log 2>&1 &
-          
-          echo "等待节点连接 (5秒)..."
           sleep 5
-          
-          echo "测试节点是否连通且 IP 是否变更:"
-          # 通过本地 socks5 端口获取当前出口 IP
           curl -x socks5h://127.0.0.1:10808 https://api.ipify.org
-          echo "" # 换行符
+          echo ""
 
-      - name: 🤖 执行续期脚本
+      - name: 🤖 在虚拟屏幕中执行续期脚本
         env:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          GH_TOKEN: ${{ secrets.GH_TOKEN }} # 或者 REPO_TOKEN
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
           ACCOUNTS: ${{ secrets.ACCOUNTS }}
-          # 传递环境变量给 Python 脚本，对应 V2rayN 默认的本地端口
           PROXY: 'socks5://127.0.0.1:10808'
         run: |
-          python hidencloud_renew.py
+          # ⭐️ 使用 xvfb-run 创建一个 1920x1080 的虚拟显示屏，并在其中运行 Python
+          xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python scripts/hidencloud_renew.py
+
+      - name: 📤 收集错误截图
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots
+          path: ./*.png
+          retention-days: 3
