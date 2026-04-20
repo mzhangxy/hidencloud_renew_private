@@ -31,7 +31,7 @@ class HidenCloudAutoRenew:
         try:
             self.accounts = json.loads(accounts_str)
         except Exception as e:
-            self.log(f"❌ ACCOUNTS 解析失败: {e}")
+            self.log(f"❌ ACCOUNTS 配置解析失败: {e}")
             self.accounts = []
             
         self.results = []
@@ -51,7 +51,7 @@ class HidenCloudAutoRenew:
 
     def update_github_secret(self, secret_name, secret_value):
         if not self.gh_token or not self.gh_repo:
-            self.log("⚠️ 缺少 GH_TOKEN 环境变量，无法更新 Cookie")
+            self.log("⚠️ 缺少 GH_TOKEN 环境变量，无法更新 Secret")
             return False
         if not NACL_AVAILABLE:
             self.log("❌ 缺少 pynacl 库，无法加密 Secret")
@@ -70,63 +70,55 @@ class HidenCloudAutoRenew:
             encrypted_value = b64encode(encrypted).decode('utf-8')
             r_update = requests.put(f"https://api.github.com/repos/{self.gh_repo}/actions/secrets/{secret_name}", headers=headers, json={"encrypted_value": encrypted_value, "key_id": key_data['key_id']})
             if r_update.status_code in [201, 204]:
-                self.log(f"🎉 成功将核心 Cookie 保存至 Github Secret: [{secret_name}]")
+                self.log(f"🎉 成功将核心票据保存至 Github Secret: [{secret_name}]")
                 return True
             else:
-                self.log(f"❌ Secret 更新失败 (权限不足?): {r_update.text}")
+                self.log(f"❌ Secret 更新失败: {r_update.text}")
                 return False
         except Exception as e: 
-            self.log(f"💥 Secret 更新发生异常: {e}")
+            self.log(f"💥 Secret 更新异常: {e}")
             return False
 
     def solve_turnstile(self, page):
         self.log("🛡️ 开始处理 Turnstile...")
         try:
+            # 检查是否已存在 Token
             resp_input = page.ele('css:[name="cf-turnstile-response"]')
             if resp_input and len(resp_input.value) > 10:
-                self.log("⚡ Token 已存在，无需重复破解！")
+                self.log("⚡ Token 已存在，无需重复点击！")
                 return True
 
             target_iframe = page.get_frame('css:iframe[src^="https://challenges.cloudflare.com"]', timeout=8)
-            if not target_iframe:
-                self.log("⚠️ 未找到 CF iframe")
-                return False
+            if not target_iframe: return False
             
             time.sleep(2)
             click_success = False
-            
             try:
+                # 穿透 ShadowRoot
                 sr = target_iframe.ele('tag:body').shadow_root
                 if sr:
                     target_ele = sr.ele('css:input[type="checkbox"]') or sr.ele('css:div.main-wrapper')
                     if target_ele:
-                        self.log("🎯 穿透 ShadowRoot 成功，执行精准点击...")
+                        self.log("🎯 穿透 ShadowRoot 成功，执行底层点击...")
                         target_ele.click.at(offset_x=10, offset_y=10)
                         click_success = True
-            except Exception as e:
-                self.log(f"⚠️ ShadowRoot 尝试失败: {e}")
+            except: pass
 
             if not click_success:
-                self.log("🏹 执行 iframe 保底盲点...")
                 try:
                     target_iframe.frame_ele.click.at(offset_x=25, offset_y=30)
                     click_success = True
                 except: pass
 
             if click_success:
-                self.log("⏳ 已经点击验证框，等待 CF 验证结果...")
                 for i in range(15):
                     time.sleep(1)
                     resp = page.ele('css:[name="cf-turnstile-response"]')
                     if resp and len(resp.value) > 10:
                         self.log(f"🎉 CF 验证通过！(耗时 {i+1}s)")
                         return True
-            
-            self.log("❌ CF 验证超时")
             return False
-        except Exception as e:
-            self.log(f"💥 Turnstile 异常: {e}")
-            return False
+        except: return False
 
     def extract_due_date(self, page):
         try:
@@ -146,59 +138,56 @@ class HidenCloudAutoRenew:
 
         try:
             page.clear_cache(cookies=True)
-            saved_cookie = os.getenv(cookie_env, '[]')
+            saved_cookie_str = os.getenv(cookie_env, '[]')
             logged_in = False
             
-            # --- 步骤 1: 尝试 Cookie 极速免密登录 ---
-            if saved_cookie and saved_cookie != '[]':
-                self.log("🍪 开始尝试按照 Playwright 标准注入 Cookie...")
+            # --- 步骤 1: 精准 Cookie 注入与登录 (只提取核心票据) ---
+            if saved_cookie_str and saved_cookie_str != '[]':
+                self.log("🍪 尝试提取并注入核心 remember_web 票据...")
                 try:
-                    # 提取上一次保存的 Cookie 值
-                    raw_cookies = json.loads(saved_cookie)
-                    cookie_name = "remember_web_59ba36addc2b2f9401580f014c7f58ea4e30989d"
-                    cookie_value = None
-                    
-                    for c in raw_cookies:
-                        if c.get('name', '').startswith('remember_web_'):
-                            cookie_name = c.get('name')
-                            cookie_value = c.get('value')
-                            break
-                            
-                    if cookie_value:
-                        # 1. 访问首页建立合法的跨域上下文环境 (DrissionPage 的特性要求)
+                    # 1. 解析旧 Cookie 值
+                    old_cookie_name = "remember_web_59ba36addc2b2f9401580f014c7f58ea4e30989d"
+                    old_cookie_value = None
+                    try:
+                        raw_data = json.loads(saved_cookie_str)
+                        if isinstance(raw_data, list) and len(raw_data) > 0:
+                            old_cookie_name = raw_data[0].get('name', old_cookie_name)
+                            old_cookie_value = raw_data[0].get('value')
+                    except:
+                        # 兼容用户直接贴 Value 的情况
+                        old_cookie_value = saved_cookie_str.strip()
+
+                    if old_cookie_value:
+                        # 2. 建立域名上下文 (但不清理 CF 通行证)
                         page.get("https://dash.hidencloud.com/auth/login")
-                        time.sleep(1)
-                        page.clear_cache(cookies=True) # 清理废弃 Session
+                        time.sleep(2)
                         
-                        # 2. ⭐️ 完全照搬 renew_service.py (Playwright) 中的严格安全属性
-                        playwright_cookie = {
-                            'name': cookie_name,
-                            'value': cookie_value,
-                            'domain': 'dash.hidencloud.com',
-                            'path': '/',
-                            'expires': int(time.time()) + 3600 * 24 * 365,
-                            'httpOnly': True,
-                            'secure': True,
-                            'sameSite': 'Lax'
-                        }
+                        # 3. 使用 CDP 协议注入带严格安全属性的“金牌”
+                        page.run_cdp('Network.setCookie', 
+                            name=old_cookie_name,
+                            value=old_cookie_value,
+                            domain='dash.hidencloud.com',
+                            path='/',
+                            secure=True,
+                            httpOnly=True,
+                            sameSite='Lax',
+                            expires=int(time.time()) + 3600 * 24 * 365
+                        )
+                        self.log(f"✅ 底层协议注入完成: {old_cookie_name[:20]}...")
                         
-                        # 3. 注入完美的 Cookie
-                        page.set.cookies(playwright_cookie)
-                        self.log("✅ 成功注入带有 HttpOnly/Secure 严格属性的 Cookie")
-                        
-                        # 4. 携票据直闯大本营
+                        # 4. 跳转测试
                         page.get("https://dash.hidencloud.com/dashboard")
                         time.sleep(4)
                         
-                        if "auth/login" not in page.url and "Your Services" in page.html: 
+                        if "login" not in page.url and "Your Services" in page.html:
                             logged_in = True
-                            self.log("🎉 Cookie 登录大成功！完美绕过所有风控。")
+                            self.log("🎉 Cookie 极速免密登录成功！")
                         else:
-                            self.log("⚠️ 注入后仍被服务端退回登录页，票据可能已在服务端到期。")
-                except Exception as e: 
-                    self.log(f"⚠️ Cookie 注入过程异常: {e}")
+                            self.log("⚠️ Cookie 似乎已被服务器作废，转入账密登录。")
+                except Exception as e:
+                    self.log(f"⚠️ Cookie 注入失败: {e}")
 
-            # --- 步骤 2: 降级账号密码登录 ---
+            # --- 步骤 2: 降级账号密码登录 (包含前置盾处理) ---
             if not logged_in:
                 self.log("🔑 退回账号密码登录...")
                 page.clear_cache(cookies=True)
@@ -208,44 +197,31 @@ class HidenCloudAutoRenew:
                 email_input = page.ele('css:input[name="username"]') or page.ele('css:input[name="email"]')
                 
                 if not email_input:
-                    self.log("🔍 未找到输入框，检查是否被 CF 前置盾拦截...")
+                    self.log("🔍 检查是否被 CF 前置盾拦截...")
                     if page.ele('css:iframe[src^="https://challenges.cloudflare.com"]'):
-                        self.log("🚧 确认为 CF 强力前置盾，尝试破解...")
                         if self.solve_turnstile(page):
-                            self.log("✅ 前置盾破除，等待页面重定向...")
                             time.sleep(5)
                             email_input = page.ele('css:input[name="username"]') or page.ele('css:input[name="email"]')
                 
                 if not email_input:
-                    self.log("❌ 依然找不到邮箱输入框，截图留证: err_no_input.png")
+                    self.log("❌ 依然找不到输入框，截图留证...")
                     try: page.get_screenshot(path='.', name=f'err_no_input_{index}.png')
                     except: pass
                     res["status"] = "❌ 登录白屏/拦截"
                     return res
                     
-                self.log("⌨️ 正在输入账号和密码...")
                 email_input.input(email, clear=True)
                 time.sleep(0.5)
                 page.ele('css:input[name="password"]').input(password, clear=True)
                 time.sleep(1)
 
-                self.log("🛡️ 检测表单上的 Turnstile 验证码...")
                 if page.ele('css:iframe[src^="https://challenges.cloudflare.com"]'):
-                    if not self.solve_turnstile(page):
-                        self.log("❌ 验证码破解失败，截图留证: err_turnstile.png")
-                        try: page.get_screenshot(path='.', name=f'err_turnstile_{index}.png')
-                        except: pass
-                        res["status"] = "❌ 验证码失败"
-                        return res
+                    self.solve_turnstile(page)
 
-                self.log("🖱️ 点击登录按钮...")
                 login_btn = page.ele('xpath://button[contains(text(), "Sign in")]') or page.ele('css:button[type="submit"]')
                 if login_btn: login_btn.click()
-                else: 
-                    self.log("⚠️ 找不到登录按钮，尝试回车提交")
-                    page.ele('css:input[name="password"]').input('\n')
+                else: page.ele('css:input[name="password"]').input('\n')
 
-                self.log("⏳ 等待页面跳转至 Dashboard...")
                 for _ in range(15):
                     if "login" not in page.url and "Your Services" in page.html:
                         logged_in = True
@@ -253,50 +229,41 @@ class HidenCloudAutoRenew:
                     time.sleep(1)
 
                 if not logged_in:
-                    self.log("❌ 登录超时或账号密码错误！截图留证: err_login_fail.png")
+                    self.log("❌ 登录超时或失败！截图留证...")
                     try: page.get_screenshot(path='.', name=f'err_login_fail_{index}.png')
                     except: pass
                     res["status"] = "❌ 登录失败"
                     return res
                 
-                # --- 核心更新：单一事实来源的 Cookie 保存逻辑 ---
-                self.log("🎉 账号密码登录成功！")
+                # --- 核心更新：单一事实来源的动态抓取 ---
+                self.log("🎉 账密登录成功，准备抓取核心身份金牌...")
                 if cookie_env:
-                    self.log("🔍 开始在浏览器中寻找 remember_web 核心身份票据...")
                     current_cookies = page.cookies()
                     target_cookie = None
                     for c in current_cookies:
                         if c.get('name', '').startswith('remember_web_'):
                             target_cookie = {
                                 'name': c.get('name'),
-                                'value': c.get('value'),
-                                'domain': 'dash.hidencloud.com',
-                                'path': '/'
+                                'value': c.get('value')
                             }
                             break
                     
-                    if not target_cookie:
-                        self.log("⚠️ 未找到 remember_web 票据，可能服务器策略有变。")
-                    else:
-                        self.log("✅ 成功提取纯净的核心票据。")
-                        needs_update = True
-                        if saved_cookie and saved_cookie != '[]':
-                            try:
-                                old_cookies = json.loads(saved_cookie)
-                                if len(old_cookies) > 0:
-                                    old_cookie_value = old_cookies[0].get('value')
-                                    if old_cookie_value == target_cookie['value']:
-                                        needs_update = False
-                            except: pass
-                        
-                        if needs_update:
-                            self.log(f"🔄 核心票据已更新或初次生成，正在写入 Github Secret [{cookie_env}]...")
+                    if target_cookie:
+                        # 精准对比 value，避免无谓的 Secret 更新
+                        needs_save = True
+                        try:
+                            old_data = json.loads(saved_cookie_str)
+                            if isinstance(old_data, list) and old_data[0].get('value') == target_cookie['value']:
+                                needs_save = False
+                        except: pass
+
+                        if needs_save:
+                            self.log(f"🔄 核心票据有变化，正在保存至 Secret [{cookie_env}]...")
                             self.update_github_secret(cookie_env, json.dumps([target_cookie]))
                         else:
-                            self.log(f"✅ 核心票据未发生实质变化，跳过 Github API 更新，节省资源。")
+                            self.log("✅ 核心票据未变动，无需更新 Secret。")
 
-            # --- 步骤 3: 提取信息并跳转 ---
-            self.log("🔍 等待提取服务器 ID...")
+            # --- 步骤 3: 信息提取与续期 (逻辑保持稳定) ---
             server_ele = None
             for _ in range(10):
                 server_ele = page.ele('xpath://*[contains(text(), "Free Server #")]')
@@ -304,107 +271,60 @@ class HidenCloudAutoRenew:
                 time.sleep(1)
 
             if not server_ele:
-                self.log("❌ 在控制台未找到 'Free Server #' 元素，截图留证: err_no_server.png")
-                try: page.get_screenshot(path='.', name=f'err_no_server_{index}.png')
-                except: pass
                 res["status"] = "❌ 找不到服务器"
                 return res
                 
-            server_text = server_ele.text
-            server_match = re.search(r'#(\d{6})', server_text)
+            server_match = re.search(r'#(\d{6})', server_ele.text)
             if not server_match:
-                self.log(f"❌ Server ID 格式解析失败 (原文: {server_text})")
                 res["status"] = "❌ ID解析失败"
                 return res
-                
             res["server"] = server_match.group(1)
-            self.log(f"⚡ 成功提取服务器 ID: #{res['server']}")
             res["old_date"] = self.extract_due_date(page)
             
-            manage_url = f"https://dash.hidencloud.com/service/{res['server']}/manage"
-            self.log(f"🔗 跳转管理页: {manage_url}")
-            page.get(manage_url)
+            page.get(f"https://dash.hidencloud.com/service/{res['server']}/manage")
             time.sleep(4) 
 
-            # --- 步骤 4: 续期判断 ---
-            self.log("🔍 寻找 Renew 按钮...")
             renew_btn = page.ele('xpath://button[contains(., "Renew")]')
             if not renew_btn:
-                self.log("❌ 找不到 Renew 按钮，截图留证: err_no_renew_btn.png")
-                try: page.get_screenshot(path='.', name=f'err_no_renew_btn_{index}.png')
-                except: pass
                 res["status"] = "❌ 找不到续期按钮"
                 return res
 
-            self.log("🖱️ 点击 Renew 按钮...")
             renew_btn.click()
             time.sleep(2)
 
             page_text = page.html
             if "Renewal Restricted" in page_text or "less than 1 day left" in page_text:
-                self.log("⚠️ 收到拦截弹窗：离到期超过一天，暂不能续期")
                 res["status"] = "⏭️ 离到期超过一天，暂不能续期"
                 return res
                 
-            self.log("✅ 满足续期条件，准备点击 Create Invoice...")
             create_btn = page.ele('xpath://button[contains(., "Create Invoice")]')
             if create_btn: 
                 create_btn.click()
-                self.log("🖱️ 点击了 Create Invoice 按钮")
-            else:
-                self.log("❌ 找不到 Create Invoice 按钮，截图留证: err_no_invoice_btn.png")
-                try: page.get_screenshot(path='.', name=f'err_no_invoice_btn_{index}.png')
-                except: pass
-                res["status"] = "❌ 弹窗状态未知"
-                return res
-
-            # --- 步骤 5: 支付流程 ---
-            self.log("⏳ 等待跳转至账单页...")
-            for _ in range(15):
-                if "/payment/invoice/" in page.url: break
-                time.sleep(1)
+                for _ in range(15):
+                    if "/payment/invoice/" in page.url: break
+                    time.sleep(1)
                 
-            if "/payment/invoice/" not in page.url:
-                self.log("❌ 账单页跳转超时，截图留证: err_invoice_timeout.png")
-                try: page.get_screenshot(path='.', name=f'err_invoice_timeout_{index}.png')
-                except: pass
-                res["status"] = "❌ 账单页超时"
-                return res
-
-            self.log("📜 向下滚动寻找 Pay 按钮...")
-            page.scroll.to_bottom()
-            time.sleep(1)
-            pay_btn = page.ele('xpath://button[contains(., "Pay")]')
-            if pay_btn: 
-                self.log("🖱️ 点击 Pay 按钮...")
-                pay_btn.click()
-            else:
-                self.log("❌ 找不到 Pay 按钮，截图留证: err_no_pay_btn.png")
-                try: page.get_screenshot(path='.', name=f'err_no_pay_btn_{index}.png')
-                except: pass
-                res["status"] = "❌ 支付按钮缺失"
-                return res
-
-            # --- 步骤 6: 验证结果 ---
-            self.log("⏳ 等待支付完成，跳转回 Dashboard...")
-            for _ in range(15):
-                if "dashboard" in page.url and "Success" in page.html: break
-                time.sleep(1)
-
-            if "Success" in page.html:
-                self.log("🎉 支付成功！")
-                time.sleep(2)
-                res["new_date"] = self.extract_due_date(page)
-                res["status"] = "✅ 续期成功"
-            else:
-                self.log("⚠️ 未捕获到明确的成功提示")
-                try: page.get_screenshot(path='.', name=f'warn_payment_status_{index}.png')
-                except: pass
-                res["status"] = "⚠️ 支付后状态未知"
+                if "/payment/invoice/" in page.url:
+                    page.scroll.to_bottom()
+                    time.sleep(1)
+                    pay_btn = page.ele('xpath://button[contains(., "Pay")]')
+                    if pay_btn: 
+                        pay_btn.click()
+                        for _ in range(15):
+                            if "dashboard" in page.url and "Success" in page.html: break
+                            time.sleep(1)
+                        if "Success" in page.html:
+                            time.sleep(2)
+                            res["new_date"] = self.extract_due_date(page)
+                            res["status"] = "✅ 续期成功"
+                        else: res["status"] = "⚠️ 支付状态未知"
+                    else: res["status"] = "❌ 支付按钮缺失"
+                else: res["status"] = "❌ 账单页超时"
+            else: res["status"] = "❌ 弹窗状态未知"
 
         except Exception as e:
-            self.log(f"💥 账号处理引发未捕获异常: {e}")
-            res["status"] = f"❌ 异常: {str(e)[:20]}"
+            self.log(f"💥 异常: {e}")
+            res["status"] = f"❌ 脚本异常"
 
         return res
 
@@ -421,7 +341,6 @@ class HidenCloudAutoRenew:
         co.set_argument('--window-size=1920,1080')
         co.headless(False)
         co.set_argument('--disable-blink-features=AutomationControlled')
-        co.set_argument('--disable-features=IsolateOrigins,site-per-process')
         
         proxy = os.getenv('PROXY')
         if proxy: co.set_argument(f'--proxy-server={proxy}')
@@ -438,7 +357,7 @@ class HidenCloudAutoRenew:
                 self.results.append(line)
                 if i < len(self.accounts) - 1: time.sleep(random.randint(3, 6))
         except Exception as e:
-            self.results.append(f"❌ 浏览器引擎崩溃: {e}")
+            self.results.append(f"❌ 浏览器异常: {e}")
         finally:
             if page: page.quit()
             if self.results: self.send_tg_notification("☁️ <b>HidenCloud 续期报告</b>\n\n" + "\n".join(self.results))
