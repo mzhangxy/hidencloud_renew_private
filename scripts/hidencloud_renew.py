@@ -65,35 +65,53 @@ class HidenCloudAutoRenew:
         except: return False
 
     def solve_turnstile(self, page):
-        self.log("🛡️ 检测到 Turnstile，开始处理...")
+        self.log("🛡️ 开始处理 Turnstile...")
         try:
-            if page.ele('css:[name="cf-turnstile-response"]') and page.ele('css:[name="cf-turnstile-response"]').value: return True
+            resp_input = page.ele('css:[name="cf-turnstile-response"]')
+            if resp_input and len(resp_input.value) > 10:
+                self.log("⚡ Token 已存在，无需重复破解！")
+                return True
+
             target_iframe = page.get_frame('css:iframe[src^="https://challenges.cloudflare.com"]', timeout=8)
-            if not target_iframe: return False
-            time.sleep(2)
+            if not target_iframe:
+                self.log("⚠️ 未找到 CF iframe")
+                return False
             
+            time.sleep(2)
             click_success = False
+            
             try:
                 sr = target_iframe.ele('tag:body').shadow_root
                 if sr:
                     target_ele = sr.ele('css:input[type="checkbox"]') or sr.ele('css:div.main-wrapper')
                     if target_ele:
+                        self.log("🎯 穿透 ShadowRoot 成功，执行精准点击...")
                         target_ele.click.at(offset_x=10, offset_y=10)
                         click_success = True
-            except: pass
+            except Exception as e:
+                self.log(f"⚠️ ShadowRoot 尝试失败: {e}")
 
             if not click_success:
+                self.log("🏹 执行 iframe 保底盲点...")
                 try:
                     target_iframe.frame_ele.click.at(offset_x=25, offset_y=30)
                     click_success = True
                 except: pass
 
             if click_success:
-                for _ in range(15):
+                self.log("⏳ 已经点击验证框，等待 CF 验证结果...")
+                for i in range(15):
                     time.sleep(1)
-                    if page.ele('css:[name="cf-turnstile-response"]') and page.ele('css:[name="cf-turnstile-response"]').value: return True
+                    resp = page.ele('css:[name="cf-turnstile-response"]')
+                    if resp and len(resp.value) > 10:
+                        self.log(f"🎉 CF 验证通过！(耗时 {i+1}s)")
+                        return True
+            
+            self.log("❌ CF 验证超时")
             return False
-        except: return False
+        except Exception as e:
+            self.log(f"💥 Turnstile 异常: {e}")
+            return False
 
     def extract_due_date(self, page):
         try:
@@ -116,7 +134,6 @@ class HidenCloudAutoRenew:
             saved_cookie = os.getenv(cookie_env, '[]')
             logged_in = False
             
-            # --- 步骤 1: 尝试 Cookie 登录 ---
             if saved_cookie and saved_cookie != '[]':
                 try:
                     page.set.cookies(json.loads(saved_cookie))
@@ -125,40 +142,54 @@ class HidenCloudAutoRenew:
                     if "login" not in page.url and "Your Services" in page.html: logged_in = True
                 except: pass
 
-            # --- 步骤 2: 降级账号密码登录 (包含前置破盾) ---
             if not logged_in:
                 self.log("🔑 退回账号密码登录...")
                 page.clear_cache(cookies=True)
                 page.get("https://dash.hidencloud.com/auth/login")
-                
-                self.log("🔍 检查是否有前置 CF 盾...")
-                if page.ele('css:iframe[src^="https://challenges.cloudflare.com"]', timeout=3):
-                    self.log("🚧 被前置 CF 盾拦截，尝试破解...")
-                    if self.solve_turnstile(page):
-                        time.sleep(4)
-                
+                time.sleep(3) # 给 Xvfb 虚拟屏幕充足的渲染时间
+
                 email_input = page.ele('css:input[name="username"]') or page.ele('css:input[name="email"]')
+                
+                # 真正的 5 秒前置盾判断逻辑：如果没有输入框，才说明被拦截在外层了
                 if not email_input:
-                    self.log("❌ 无法找到邮箱输入框，截图保存...")
-                    try: page.get_screenshot(path='.', name=f'error_login_blank_{index}.png')
+                    self.log("🔍 未找到输入框，检查是否被 CF 前置盾拦截...")
+                    if page.ele('css:iframe[src^="https://challenges.cloudflare.com"]'):
+                        self.log("🚧 确认为 CF 强力前置盾，尝试破解...")
+                        if self.solve_turnstile(page):
+                            self.log("✅ 前置盾破除，等待页面重定向...")
+                            time.sleep(5)
+                            email_input = page.ele('css:input[name="username"]') or page.ele('css:input[name="email"]')
+                
+                if not email_input:
+                    self.log("❌ 依然找不到邮箱输入框，截图留证: err_no_input.png")
+                    try: page.get_screenshot(path='.', name=f'err_no_input_{index}.png')
                     except: pass
-                    res["status"] = "❌ 登录白屏/超时"
+                    res["status"] = "❌ 登录白屏/拦截"
                     return res
                     
+                self.log("⌨️ 正在输入账号和密码...")
                 email_input.input(email, clear=True)
                 time.sleep(0.5)
                 page.ele('css:input[name="password"]').input(password, clear=True)
                 time.sleep(1)
 
+                self.log("🛡️ 检测表单上的 Turnstile 验证码...")
                 if page.ele('css:iframe[src^="https://challenges.cloudflare.com"]'):
                     if not self.solve_turnstile(page):
+                        self.log("❌ 验证码破解失败，截图留证: err_turnstile.png")
+                        try: page.get_screenshot(path='.', name=f'err_turnstile_{index}.png')
+                        except: pass
                         res["status"] = "❌ 验证码失败"
                         return res
 
-                login_btn = page.ele('xpath://button[contains(text(), "Sign in")]')
+                self.log("🖱️ 点击登录按钮...")
+                login_btn = page.ele('xpath://button[contains(text(), "Sign in")]') or page.ele('css:button[type="submit"]')
                 if login_btn: login_btn.click()
-                else: page.ele('css:input[name="password"]').input('\n')
+                else: 
+                    self.log("⚠️ 找不到登录按钮，尝试回车提交")
+                    page.ele('css:input[name="password"]').input('\n')
 
+                self.log("⏳ 等待页面跳转至 Dashboard...")
                 for _ in range(15):
                     if "login" not in page.url and "Your Services" in page.html:
                         logged_in = True
@@ -166,13 +197,17 @@ class HidenCloudAutoRenew:
                     time.sleep(1)
 
                 if not logged_in:
+                    self.log("❌ 登录超时或账号密码错误！截图留证: err_login_fail.png")
+                    try: page.get_screenshot(path='.', name=f'err_login_fail_{index}.png')
+                    except: pass
                     res["status"] = "❌ 登录超时或失败"
                     return res
                 
+                self.log("🎉 账号密码登录成功！")
                 if cookie_env:
                     self.update_github_secret(cookie_env, json.dumps(page.cookies()))
 
-            # --- 步骤 3: 提取信息并跳转 ---
+            # --- 下方续期代码保持不变 ---
             server_match = re.search(r'Free Server\s+#(\d{6})', page.html)
             if not server_match:
                 res["status"] = "❌ 找不到服务器"
@@ -183,7 +218,6 @@ class HidenCloudAutoRenew:
             page.get(f"https://dash.hidencloud.com/service/{res['server']}/manage")
             time.sleep(3)
 
-            # --- 步骤 4: 续期判断 ---
             renew_btn = page.ele('xpath://button[contains(., "Renew")]')
             if not renew_btn:
                 res["status"] = "❌ 找不到续期按钮"
@@ -203,7 +237,6 @@ class HidenCloudAutoRenew:
                 res["status"] = "❌ 弹窗状态未知"
                 return res
 
-            # --- 步骤 5: 支付流程 ---
             for _ in range(15):
                 if "/payment/invoice/" in page.url: break
                 time.sleep(1)
@@ -220,7 +253,6 @@ class HidenCloudAutoRenew:
                 res["status"] = "❌ 支付按钮缺失"
                 return res
 
-            # --- 步骤 6: 验证结果 ---
             for _ in range(15):
                 if "dashboard" in page.url and "Success" in page.html: break
                 time.sleep(1)
@@ -233,7 +265,7 @@ class HidenCloudAutoRenew:
                 res["status"] = "⚠️ 支付后状态未知"
 
         except Exception as e:
-            self.log(f"💥 账号崩溃: {e}")
+            self.log(f"💥 账号处理引发未捕获异常: {e}")
             res["status"] = f"❌ 异常: {str(e)[:20]}"
 
         return res
@@ -249,11 +281,7 @@ class HidenCloudAutoRenew:
         co.set_argument('--disable-gpu')
         co.set_argument('--disable-dev-shm-usage')
         co.set_argument('--window-size=1920,1080')
-        
-        # ⭐️ 核心改进 1: 强制关闭无头模式 (配合外层 Xvfb 虚拟屏幕)
         co.headless(False)
-        
-        # ⭐️ 核心改进 2: 注入强力反指纹参数
         co.set_argument('--disable-blink-features=AutomationControlled')
         co.set_argument('--disable-features=IsolateOrigins,site-per-process')
         
