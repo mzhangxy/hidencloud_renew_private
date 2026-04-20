@@ -151,12 +151,26 @@ class HidenCloudAutoRenew:
             
             # --- 步骤 1: 尝试 Cookie 登录 ---
             if saved_cookie and saved_cookie != '[]':
+                self.log("🍪 尝试使用保存的 Cookie 极速免密登录...")
                 try:
-                    page.set.cookies(json.loads(saved_cookie))
+                    # ⭐️ 核心修正 1：先访问一下首页建立域名上下文，否则 DrissionPage 注入会失败
+                    page.get("https://dash.hidencloud.com/")
+                    time.sleep(1)
+                    page.clear_cache(cookies=True) # 清理临时分配的废弃 session
+                    
+                    cookies_to_inject = json.loads(saved_cookie)
+                    page.set.cookies(cookies_to_inject)
+                    
                     page.get("https://dash.hidencloud.com/dashboard")
                     time.sleep(3)
-                    if "login" not in page.url and "Your Services" in page.html: logged_in = True
-                except: pass
+                    
+                    if "login" not in page.url and "Your Services" in page.html: 
+                        logged_in = True
+                        self.log("🎉 Cookie 登录成功！完美绕过所有风控。")
+                    else:
+                        self.log("⚠️ Cookie 似乎已过期或被服务器拒绝，将降级为账密登录。")
+                except Exception as e: 
+                    self.log(f"⚠️ Cookie 注入过程异常: {e}")
 
             # --- 步骤 2: 降级账号密码登录 ---
             if not logged_in:
