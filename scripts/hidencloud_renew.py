@@ -291,8 +291,8 @@ class HidenCloudAutoRenew:
             for i, account in enumerate(self.accounts):
                 res = self.process_account(page, account, i)
                 icon = "✅" if "成功" in res['status'] else ("⏭️" if "未到期" in res['status'] else "❌")
-                line = f"{icon} <b>{res['name']}</b> (<code>#{res['server']}</code>)\n 📅 旧到期: {res['old_date']}\n"
-                if "成功" in res['status']: line += f"   📅 新到期: {res['new_date']}\n"
+                line = f"{icon} <b>{res['name']}</b> (<code>#{res['server']}</code>)\n📅 旧到期: {res['old_date']}\n"
+                if "成功" in res['status']: line += f"📅 新到期: {res['new_date']}\n"
                 line += f"🖥️ 服务器状态: {res['status']}\n"
                 self.results.append(line)
                 if i < len(self.accounts) - 1: time.sleep(random.randint(3, 6))
