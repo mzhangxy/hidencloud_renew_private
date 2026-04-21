@@ -91,9 +91,25 @@ class HidenCloudAutoRenew:
 
     def extract_due_date(self, page):
         try:
-            date_match = re.search(r'(\d{1,2}\s+[A-Za-z]{3}\s+\d{4})', page.html)
-            return date_match.group(1) if date_match else "未知日期"
-        except: return "未知日期"
+            # 策略1：寻找包含 Due Date 标签的区域
+            due_label = page.ele('text:Due date') or page.ele('text:Due Date') or page.ele('text:DUE DATE')
+            if due_label and due_label.parent():
+                # 仅在该标签的父级容器范围内进行正则提取
+                date_match = re.search(r'(\d{1,2}\s+[A-Za-z]{3}\s+\d{4})', due_label.parent().text)
+                if date_match: 
+                    return date_match.group(1)
+            
+            # 策略2：(针对 Dashboard 表格页) 抓取页面上所有的日期，避开第一个干扰项
+            dates = re.findall(r'(\d{1,2}\s+[A-Za-z]{3}\s+\d{4})', page.html)
+            if dates:
+                # 页面中出现的第一个日期是左侧栏的 "Member since"
+                # 目标服务器的到期时间是最后一个
+                return dates[-1] if len(dates) > 1 else dates[0]
+                
+        except Exception as e: 
+            self.log(f"⚠️ 日期提取异常: {e}")
+            
+        return "未知日期"
 
     def process_account(self, page, account, index):
         email, password, cookie_env = account.get('email', ''), account.get('password', ''), account.get('cookie_env', '')
