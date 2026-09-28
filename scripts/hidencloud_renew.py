@@ -292,6 +292,10 @@ class HidenCloudAutoRenew:
             self.send_tg_notification("🚨 HidenCloud\n❌ ACCOUNTS 未配置。")
             return
 
+        # 👇 移植：读取 sing-box 传来的代理环境变量
+        is_proxy = os.environ.get('IS_PROXY', 'false').lower() == 'true'
+        proxy_server = os.environ.get('PROXY_SERVER')
+
         co = ChromiumOptions()
         co.set_browser_path('/usr/bin/google-chrome')
         co.set_argument('--no-sandbox')
@@ -300,9 +304,13 @@ class HidenCloudAutoRenew:
         co.set_argument('--window-size=1920,1080')
         co.headless(False)
         co.set_argument('--disable-blink-features=AutomationControlled')
-        proxy_server = os.getenv('PROXY')
-        if proxy_server:
+
+        # 👇 移植：为 DrissionPage 挂载代理
+        if is_proxy and proxy_server:
+            self.log(f"⚙️ 代理已启用: {proxy_server}")
             co.set_argument(f'--proxy-server={proxy_server}')
+        else:
+            self.log("🌐 直连模式（未使用代理或未配置节点）")
 
         page = None
         try:
