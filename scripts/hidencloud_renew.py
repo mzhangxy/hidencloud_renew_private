@@ -300,6 +300,9 @@ class HidenCloudAutoRenew:
         co.set_argument('--window-size=1920,1080')
         co.headless(False)
         co.set_argument('--disable-blink-features=AutomationControlled')
+        proxy_server = os.getenv('PROXY')
+        if proxy_server:
+            co.set_argument(f'--proxy-server={proxy_server}')
 
         page = None
         try:
